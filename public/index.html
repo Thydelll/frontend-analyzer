@@ -82,7 +82,7 @@ const download = (name, text) => {
 fetch('/api/config').then((r) => r.json()).then((c) => {
   if (!c.authRequired) return;
   const t = $('#token'); t.hidden = false; t.required = true;
-  try { t.value = sessionStorage.getItem('fa_token') || ''; } catch {}
+  try { t.value = localStorage.getItem('fa_token') || ''; } catch {}
 }).catch(() => {});
 
 // Troca de abas
@@ -98,7 +98,7 @@ $('#form').addEventListener('submit', async (e) => {
   btn.disabled = true; status.className = ''; status.textContent = 'Analisando... (pode levar até ~1 min)';
   try {
     const tk = $('#token').value.trim();
-    try { if (tk) sessionStorage.setItem('fa_token', tk); } catch {}
+    try { if (tk) localStorage.setItem('fa_token', tk); } catch {}
     const headers = { 'Content-Type': 'application/json' };
     if (tk) headers.Authorization = 'Bearer ' + tk;
     const r = await fetch('/api/analyze', {
@@ -106,6 +106,7 @@ $('#form').addEventListener('submit', async (e) => {
       body: JSON.stringify({ url: $('#url').value.trim() }),
     });
     const data = await r.json();
+    if (r.status === 401) { try { localStorage.removeItem('fa_token'); } catch {} }
     if (!r.ok) throw new Error(data.error || 'Erro desconhecido');
     render(data);
     status.textContent = `Concluído em ${(data.meta.durationMs / 1000).toFixed(1)}s — ${data.meta.finalUrl}` +

@@ -65,6 +65,9 @@ function rateLimit(req, res, next) {
 
 let running = 0;
 
+// JSZip servido localmente (exportar .zip no navegador, sem depender de CDN)
+app.get('/vendor/jszip.min.js', (_req, res) => res.sendFile(require.resolve('jszip/dist/jszip.min.js')));
+
 // Health check sem autenticação (usado pela plataforma de deploy)
 app.get('/api/health', (_req, res) => res.json({ ok: true, running }));
 

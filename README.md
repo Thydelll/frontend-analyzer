@@ -36,6 +36,14 @@ frontend-analyzer/
 | `MAX_CONCURRENT` | `2` | Análises simultâneas |
 | `TRUST_PROXY` | vazio | `1` atrás de proxy reverso, para o rate limit ver o IP real |
 
+## Recursos do dashboard
+
+- **Source maps:** se o site publica `.map` (comentário `sourceMappingURL`, cabeçalho `SourceMap` ou mapa embutido), o código original é recuperado. Dependências (`node_modules`) são só listadas; há limites de tamanho (8 MB por map, 6 MB de código no total).
+- **Tecnologias:** frameworks, bibliotecas, CMS, servidor/CDN e analytics, detectados por variáveis globais, DOM, cabeçalhos e nomes de arquivo.
+- **Busca:** texto ou regex no HTML, JS, URLs/headers/respostas das APIs e código original.
+- **Baixar tudo (.zip):** DOM, JS formatado, JSON das APIs/assets e código original dos source maps. O zip é gerado no navegador (JSZip servido em `/vendor/jszip.min.js`).
+- **Recentes:** as últimas 10 URLs analisadas, guardadas só no navegador.
+
 ## Modo leve e memória
 
 - **Modo leve** (padrão, caixa no dashboard ou `"light": false` na API para desligar): não baixa imagens, fontes e mídia; só lista as URLs. Usa bem menos memória. Desligado, o DOM fica mais fiel.

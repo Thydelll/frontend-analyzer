@@ -4,24 +4,30 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Frontend Analyzer</title>
+<link rel="icon" href="data:,">
 <style>
-  :root { --bg:#0f1115; --panel:#181b22; --line:#2a2f3a; --text:#e6e8ee; --muted:#8b93a7; --accent:#5b8cff; --ok:#3ecf8e; --err:#ff6b6b; }
+  :root { --bg:#0f1115; --panel:#181b22; --line:#2a2f3a; --text:#e6e8ee; --muted:#8b93a7; --accent:#5b8cff; --ok:#3ecf8e; --err:#ff6b6b; --warn:#f5b94a; }
   * { box-sizing: border-box; }
   body { margin:0; font:14px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--text); }
   header { padding:16px 20px; border-bottom:1px solid var(--line); }
   h1 { margin:0 0 12px; font-size:18px; }
-  form { display:flex; gap:8px; }
-  input[type=url] { flex:1; padding:10px 12px; border-radius:8px; border:1px solid var(--line); background:var(--panel); color:var(--text); }
+  form { display:flex; gap:8px; flex-wrap:wrap; }
+  input[type=url], input[type=text], input[type=password] { padding:10px 12px; border-radius:8px; border:1px solid var(--line); background:var(--panel); color:var(--text); }
+  input[type=url] { flex:1; min-width:220px; }
   button { padding:10px 16px; border-radius:8px; border:0; background:var(--accent); color:#fff; font-weight:600; cursor:pointer; }
   button:disabled { opacity:.5; cursor:wait; }
-  #status { padding:10px 20px; color:var(--muted); }
+  button.ghost { background:var(--line); padding:6px 12px; font-weight:500; }
+  #statusRow { display:flex; gap:12px; align-items:center; padding:10px 20px; flex-wrap:wrap; }
+  #status { color:var(--muted); flex:1; min-width:200px; }
   #status.err { color:var(--err); }
+  #history { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; align-items:center; }
+  #history .chip { cursor:pointer; background:var(--panel); border:1px solid var(--line); }
   nav { display:flex; gap:4px; padding:0 20px; border-bottom:1px solid var(--line); overflow-x:auto; }
-  nav button { background:transparent; color:var(--muted); border-radius:0; border-bottom:2px solid transparent; }
+  nav button { background:transparent; color:var(--muted); border-radius:0; border-bottom:2px solid transparent; white-space:nowrap; }
   nav button.active { color:var(--text); border-color:var(--accent); }
   main { padding:20px; }
   .tab { display:none; } .tab.active { display:block; }
-  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:12px; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
   .card b { display:block; font-size:22px; }
   .card span { color:var(--muted); }
@@ -32,11 +38,20 @@
   details { background:var(--panel); border:1px solid var(--line); border-radius:8px; margin-bottom:8px; }
   summary { padding:10px 12px; cursor:pointer; word-break:break-all; }
   details pre { margin:0; border:0; border-top:1px solid var(--line); border-radius:0 0 8px 8px; }
+  details details { margin:6px 12px; }
   .badge { display:inline-block; padding:1px 8px; border-radius:6px; background:var(--line); margin-right:6px; font-size:12px; }
+  .chip { display:inline-block; padding:3px 10px; border-radius:999px; background:var(--line); font-size:12px; color:var(--text); }
+  .chip small { color:var(--muted); }
   .ok { color:var(--ok); } .bad { color:var(--err); }
+  .warn { background:#2b2412; border:1px solid #5a4a1c; color:var(--warn); padding:10px 12px; border-radius:8px; margin:12px 0; }
+  .muted { color:var(--muted); }
   h3 { margin:20px 0 8px; }
-  .toolbar { margin-bottom:10px; display:flex; gap:8px; }
-  .toolbar button { padding:6px 12px; background:var(--line); }
+  .toolbar { margin-bottom:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .searchbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+  .searchbar input[type=text] { flex:1; min-width:200px; }
+  mark { background:#5a4a1c; color:var(--warn); padding:0 2px; border-radius:3px; }
+  .snip { font-family:ui-monospace,Consolas,monospace; font-size:12.5px; white-space:pre-wrap; }
+  .vendor { color:var(--muted); padding:2px 12px; font-size:12.5px; word-break:break-all; }
 </style>
 </head>
 <body>
@@ -44,14 +59,18 @@
   <h1>🔎 Frontend Analyzer</h1>
   <form id="form">
     <input type="url" id="url" placeholder="https://exemplo.com" required>
-    <input type="password" id="token" placeholder="Token de acesso" autocomplete="off" hidden style="width:200px;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--text)">
+    <input type="password" id="token" placeholder="Token de acesso" autocomplete="off" hidden style="width:200px">
     <button id="go" type="submit">Analisar</button>
   </form>
   <label style="display:flex;gap:8px;align-items:center;margin-top:10px;color:var(--muted);cursor:pointer" title="Não baixa imagens, fontes e vídeos (só lista as URLs). Usa bem menos memória.">
-    <input type="checkbox" id="light" checked> Modo leve <small>(não baixa imagens/fontes/vídeos; use desligado para um DOM mais fiel)</small>
+    <input type="checkbox" id="light" checked> Modo leve <small>(não baixa imagens/fontes/vídeos; desligue para um DOM mais fiel)</small>
   </label>
+  <div id="history"></div>
 </header>
-<div id="status">Informe uma URL (apenas sites que você tem autorização para analisar).</div>
+<div id="statusRow">
+  <div id="status">Informe uma URL (apenas sites que você tem autorização para analisar).</div>
+  <button id="zip" class="ghost" type="button" hidden>⬇ Baixar tudo (.zip)</button>
+</div>
 
 <nav id="tabs">
   <button data-tab="summary" class="active">Resumo</button>
@@ -59,6 +78,8 @@
   <button data-tab="assets">Assets</button>
   <button data-tab="api">APIs / XHR</button>
   <button data-tab="js">JavaScript</button>
+  <button data-tab="maps">Source maps</button>
+  <button data-tab="search">Busca</button>
 </nav>
 
 <main>
@@ -67,6 +88,17 @@
   <section id="assets" class="tab"></section>
   <section id="api" class="tab"></section>
   <section id="js" class="tab"></section>
+  <section id="maps" class="tab"></section>
+  <section id="search" class="tab">
+    <form id="searchForm" class="searchbar">
+      <input type="text" id="q" placeholder="Buscar no HTML, JS, respostas de API e código original (ex.: apiKey, /v1/)">
+      <label class="muted"><input type="checkbox" id="rx"> regex</label>
+      <label class="muted"><input type="checkbox" id="cs"> maiúsc./minúsc.</label>
+      <button type="submit">Buscar</button>
+    </form>
+    <div class="toolbar" id="quick"></div>
+    <div id="searchOut" class="muted">Faça uma análise primeiro, depois busque aqui.</div>
+  </section>
 </main>
 
 <script>
@@ -76,33 +108,61 @@ const el = (tag, props = {}, ...kids) => {
   kids.flat().forEach((k) => n.append(k));
   return n;
 };
-const download = (name, text) => {
-  const a = el('a', { href: URL.createObjectURL(new Blob([text])), download: name });
-  a.click(); URL.revokeObjectURL(a.href);
+const download = (name, data) => {
+  const a = el('a', { href: URL.createObjectURL(new Blob([data])), download: name });
+  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 };
+const shortUrl = (u) => { try { const x = new URL(u); return x.host + x.pathname + x.search; } catch { return u; } };
 
-// Lembra a escolha do modo leve
+let DATA = null; // última análise
+
+/* ---------- Preferências ---------- */
 try { const v = localStorage.getItem('fa_light'); if (v !== null) $('#light').checked = v === '1'; } catch {}
 $('#light').addEventListener('change', (e) => { try { localStorage.setItem('fa_light', e.target.checked ? '1' : '0'); } catch {} });
 
-// Mostra o campo de token só se o servidor exigir
 fetch('/api/config').then((r) => r.json()).then((c) => {
   if (!c.authRequired) return;
   const t = $('#token'); t.hidden = false; t.required = true;
   try { t.value = localStorage.getItem('fa_token') || ''; } catch {}
 }).catch(() => {});
 
-// Troca de abas
+/* ---------- Abas ---------- */
 $('#tabs').addEventListener('click', (e) => {
   const t = e.target.dataset.tab; if (!t) return;
   document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('active', b === e.target));
   document.querySelectorAll('.tab').forEach((s) => s.classList.toggle('active', s.id === t));
 });
 
+/* ---------- Histórico (só resumo, no navegador) ---------- */
+const HKEY = 'fa_history';
+const loadHistory = () => { try { return JSON.parse(localStorage.getItem(HKEY)) || []; } catch { return []; } };
+function saveHistory(d, light) {
+  const list = loadHistory().filter((h) => h.url !== d.meta.requestedUrl);
+  list.unshift({ url: d.meta.requestedUrl, title: d.meta.title, ts: Date.now(), light });
+  try { localStorage.setItem(HKEY, JSON.stringify(list.slice(0, 10))); } catch {}
+  renderHistory();
+}
+function renderHistory() {
+  const box = $('#history'); box.replaceChildren();
+  const list = loadHistory();
+  if (!list.length) return;
+  box.append(el('span', { className: 'muted', textContent: 'Recentes:' }));
+  list.forEach((h) => box.append(el('span', {
+    className: 'chip', textContent: shortUrl(h.url).slice(0, 40),
+    title: `${h.title || ''} — ${new Date(h.ts).toLocaleString()}`,
+    onclick: () => { $('#url').value = h.url; $('#light').checked = h.light !== false; $('#url').focus(); },
+  })));
+  box.append(el('button', { className: 'ghost', type: 'button', textContent: 'limpar',
+    onclick: () => { try { localStorage.removeItem(HKEY); } catch {} renderHistory(); } }));
+}
+renderHistory();
+
+/* ---------- Análise ---------- */
 $('#form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const btn = $('#go'), status = $('#status');
   btn.disabled = true; status.className = ''; status.textContent = 'Analisando... (pode levar até ~1 min)';
+  const light = $('#light').checked;
   try {
     const tk = $('#token').value.trim();
     try { if (tk) localStorage.setItem('fa_token', tk); } catch {}
@@ -110,72 +170,241 @@ $('#form').addEventListener('submit', async (e) => {
     if (tk) headers.Authorization = 'Bearer ' + tk;
     const r = await fetch('/api/analyze', {
       method: 'POST', headers,
-      body: JSON.stringify({ url: $('#url').value.trim(), light: $('#light').checked }),
+      body: JSON.stringify({ url: $('#url').value.trim(), light }),
     });
     const data = await r.json();
     if (r.status === 401) { try { localStorage.removeItem('fa_token'); } catch {} }
     if (!r.ok) throw new Error(data.error || 'Erro desconhecido');
+    DATA = data;
     render(data);
-    status.textContent = `Concluído em ${(data.meta.durationMs / 1000).toFixed(1)}s — ${data.meta.finalUrl}` +
-      (data.meta.navigationWarning ? ` (aviso: ${data.meta.navigationWarning})` : '');
+    saveHistory(data, light);
+    status.textContent = `Concluído em ${(data.meta.durationMs / 1000).toFixed(1)}s — ${data.meta.finalUrl}`;
   } catch (err) {
     status.className = 'err'; status.textContent = 'Erro: ' + err.message;
   } finally { btn.disabled = false; }
 });
 
 function render(d) {
-  // Resumo
+  $('#zip').hidden = false;
+  renderSummary(d); renderHtml(d); renderAssets(d); renderApis(d); renderJs(d); renderMaps(d);
+  $('#searchOut').className = 'muted';
+  $('#searchOut').textContent = 'Digite um termo e clique em Buscar.';
+  renderQuick();
+}
+
+function renderSummary(d) {
   const s = d.stats;
-  $('#summary').replaceChildren(
-    el('div', { className: 'cards' },
-      Object.entries({ 'Imagens': s.images, 'Fontes': s.fonts, 'CSS': s.stylesheets, 'APIs XHR/Fetch': s.apiCalls, 'Arquivos JS': s.scripts, 'HTML (chars)': s.htmlChars })
-        .map(([k, v]) => el('div', { className: 'card' }, el('b', { textContent: v }), el('span', { textContent: k })))),
+  const cards = { 'Imagens': s.images, 'Fontes': s.fonts, 'CSS': s.stylesheets, 'APIs XHR/Fetch': s.apiCalls, 'Arquivos JS': s.scripts, 'Source maps': s.sourceMaps, 'Tecnologias': s.techCount };
+  const out = [
+    el('div', { className: 'cards' }, Object.entries(cards).map(([k, v]) =>
+      el('div', { className: 'card' }, el('b', { textContent: v }), el('span', { textContent: k })))),
     el('h3', { textContent: d.meta.title || '(sem título)' }),
-    el('p', { textContent: d.meta.finalUrl, style: 'color:var(--muted)' }));
+    el('p', { textContent: d.meta.finalUrl, className: 'muted' }),
+  ];
+  if (d.meta.navigationWarning) out.push(el('div', { className: 'warn', textContent: '⚠ ' + d.meta.navigationWarning }));
+  if (d.meta.light) out.push(el('p', { className: 'muted', textContent: 'Modo leve: imagens, fontes e mídia não foram baixadas (só as URLs).' }));
+  out.push(el('h3', { textContent: 'Tecnologias detectadas' }));
+  if (!d.tech.length) out.push(el('p', { className: 'muted', textContent: 'Nenhuma tecnologia identificada.' }));
+  const groups = { framework: 'Frameworks', library: 'Bibliotecas', cms: 'CMS / plataforma', infra: 'Servidor / infra', analytics: 'Analytics' };
+  for (const [type, label] of Object.entries(groups)) {
+    const items = d.tech.filter((t) => t.type === type);
+    if (!items.length) continue;
+    out.push(el('div', { style: 'margin:8px 0' },
+      el('span', { className: 'muted', textContent: label + ': ', style: 'margin-right:6px' }),
+      items.map((t) => el('span', { className: 'chip', title: 'detectado via ' + t.via, style: 'margin:0 6px 6px 0' },
+        t.name, t.version ? el('small', { textContent: ' ' + t.version }) : ''))));
+  }
+  $('#summary').replaceChildren(...out);
+}
 
-  // HTML
+function renderHtml(d) {
   $('#html').replaceChildren(
-    el('div', { className: 'toolbar' }, el('button', { textContent: 'Baixar HTML', onclick: () => download('dom.html', d.html) })),
+    el('div', { className: 'toolbar' }, el('button', { className: 'ghost', textContent: 'Baixar HTML', onclick: () => download('dom.html', d.html) })),
     el('pre', { textContent: d.html }));
+}
 
-  // Assets
-  const assetsEl = $('#assets'); assetsEl.replaceChildren();
+function renderAssets(d) {
+  const box = $('#assets'); box.replaceChildren();
   for (const [group, list] of Object.entries(d.assets)) {
-    assetsEl.append(el('h3', { textContent: `${group} (${list.length})` }));
+    box.append(el('h3', { textContent: `${group} (${list.length})` }));
     const tbl = el('table', {}, el('tr', {}, ...['URL', 'Status', 'Tipo'].map((h) => el('th', { textContent: h }))));
     list.forEach((a) => tbl.append(el('tr', {},
       el('td', {}, el('a', { href: a.url, target: '_blank', rel: 'noreferrer noopener', textContent: a.url, style: 'color:var(--accent)' })),
       el('td', { textContent: a.skipped ? 'não baixado (modo leve)' : a.status }), el('td', { textContent: a.contentType || '-' }))));
-    assetsEl.append(tbl);
+    box.append(tbl);
   }
+}
 
-  // APIs
-  const apiEl = $('#api'); apiEl.replaceChildren(
-    el('div', { className: 'toolbar' }, el('button', { textContent: 'Baixar JSON', onclick: () => download('api-calls.json', JSON.stringify(d.apiCalls, null, 2)) })));
-  if (!d.apiCalls.length) apiEl.append(el('p', { textContent: 'Nenhuma chamada XHR/Fetch detectada.' }));
+function renderApis(d) {
+  const box = $('#api');
+  box.replaceChildren(el('div', { className: 'toolbar' },
+    el('button', { className: 'ghost', textContent: 'Baixar JSON', onclick: () => download('api-calls.json', JSON.stringify(d.apiCalls, null, 2)) })));
+  if (!d.apiCalls.length) box.append(el('p', { textContent: 'Nenhuma chamada XHR/Fetch detectada.' }));
   d.apiCalls.forEach((c) => {
     const body = [
       'REQUEST HEADERS\n' + JSON.stringify(c.requestHeaders, null, 2),
       c.postData ? '\nPOST DATA\n' + c.postData : '',
       '\nRESPONSE PREVIEW\n' + (c.bodyPreview ?? '(indisponível)'),
     ].join('\n');
-    apiEl.append(el('details', {},
+    box.append(el('details', {},
       el('summary', {},
         el('span', { className: 'badge', textContent: c.method }),
-        el('span', { className: 'badge ' + (c.status < 400 ? 'ok' : 'bad'), textContent: c.status }),
-        c.url),
+        el('span', { className: 'badge ' + (c.status < 400 ? 'ok' : 'bad'), textContent: c.status }), c.url),
       el('pre', { textContent: body })));
   });
+}
 
-  // JS
-  const jsEl = $('#js'); jsEl.replaceChildren();
-  if (!d.scripts.length) jsEl.append(el('p', { textContent: 'Nenhum arquivo JS capturado.' }));
-  d.scripts.forEach((j) => jsEl.append(el('details', {},
-    el('summary', {}, el('span', { className: 'badge', textContent: (j.bytes / 1024).toFixed(1) + ' KB' }), j.url + (j.truncated ? ' (truncado)' : '')),
+const jsName = (u) => { try { return new URL(u).pathname.split('/').filter(Boolean).pop() || 'script.js'; } catch { return 'script.js'; } };
+
+function renderJs(d) {
+  const box = $('#js'); box.replaceChildren();
+  if (!d.scripts.length) box.append(el('p', { textContent: 'Nenhum arquivo JS capturado.' }));
+  d.scripts.forEach((j) => box.append(el('details', {},
+    el('summary', {},
+      el('span', { className: 'badge', textContent: (j.bytes / 1024).toFixed(1) + ' KB' }),
+      j.sourceMap ? el('span', { className: 'badge ok', textContent: 'source map' }) : '',
+      j.url + (j.truncated ? ' (truncado)' : '')),
     el('div', { className: 'toolbar', style: 'padding:8px 12px' },
-      el('button', { textContent: 'Baixar .js', onclick: () => download(j.url.split('/').pop().split('?')[0] || 'script.js', j.code) })),
+      el('button', { className: 'ghost', textContent: 'Baixar .js', onclick: () => download(jsName(j.url), j.code) })),
     el('pre', { textContent: j.code }))));
 }
+
+/* ---------- Source maps (conteúdo criado só ao abrir cada arquivo) ---------- */
+function renderMaps(d) {
+  const box = $('#maps'); box.replaceChildren();
+  const withMap = d.scripts.filter((j) => j.sourceMap);
+  const failed = d.scripts.filter((j) => j.sourceMapError);
+  if (!withMap.length) box.append(el('p', { className: 'muted', textContent: 'Nenhum source map público encontrado. Sites em produção costumam não publicá-los.' }));
+  withMap.forEach((j) => {
+    const sm = j.sourceMap;
+    const own = sm.files.filter((f) => !f.vendor);
+    const vendor = sm.files.filter((f) => f.vendor);
+    const wrap = el('details', {},
+      el('summary', {},
+        el('span', { className: 'badge ok', textContent: `${sm.withContent} com código` }),
+        el('span', { className: 'badge', textContent: `${sm.total} arquivos` }),
+        jsName(j.url) + ' ← ' + shortUrl(sm.url)));
+    if (sm.budgetExhausted) wrap.append(el('div', { className: 'warn', textContent: 'Limite de tamanho atingido: parte dos arquivos veio sem conteúdo.' }));
+    own.forEach((f) => {
+      const det = el('details', {}, el('summary', {},
+        f.content === undefined ? el('span', { className: 'badge', textContent: 'sem conteúdo' }) : '',
+        f.path + (f.truncated ? ' (truncado)' : '')));
+      if (f.content !== undefined) det.addEventListener('toggle', () => {
+        if (det.open && !det.querySelector('pre')) det.append(el('pre', { textContent: f.content }));
+      });
+      wrap.append(det);
+    });
+    if (vendor.length) wrap.append(el('details', {},
+      el('summary', { className: 'muted', textContent: `Dependências / bundler (${vendor.length}) — só nomes` }),
+      vendor.map((f) => el('div', { className: 'vendor', textContent: f.path }))));
+    box.append(wrap);
+  });
+  if (failed.length) {
+    box.append(el('h3', { textContent: 'Source maps referenciados mas não obtidos' }));
+    failed.forEach((j) => box.append(el('div', { className: 'vendor', textContent: jsName(j.url) + ': ' + j.sourceMapError })));
+  }
+}
+
+/* ---------- Busca ---------- */
+function buildCorpus(d) {
+  const docs = [{ label: 'HTML (DOM)', text: d.html }];
+  d.scripts.forEach((j) => docs.push({ label: 'JS: ' + shortUrl(j.url), text: j.code }));
+  docs.push({ label: 'URLs das APIs', text: d.apiCalls.map((c) => `${c.method} ${c.url}`).join('\n') });
+  d.apiCalls.forEach((c) => {
+    const tag = `API ${c.method} ${shortUrl(c.url)}`;
+    docs.push({ label: tag + ' (headers enviados)', text: JSON.stringify(c.requestHeaders, null, 2) });
+    if (c.postData) docs.push({ label: tag + ' (corpo enviado)', text: c.postData });
+    if (c.bodyPreview) docs.push({ label: tag + ' (resposta)', text: c.bodyPreview });
+  });
+  d.scripts.forEach((j) => j.sourceMap && j.sourceMap.files.forEach((f) => {
+    if (f.content) docs.push({ label: 'Código original: ' + f.path, text: f.content });
+  }));
+  return docs;
+}
+
+function runSearch(d, term, isRegex, caseSensitive) {
+  const src = isRegex ? term : term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(src, caseSensitive ? 'g' : 'gi');
+  const MAX = 300, PER_DOC = 40;
+  const results = []; let total = 0;
+  for (const doc of buildCorpus(d)) {
+    re.lastIndex = 0;
+    let m, line = 1, last = 0, n = 0;
+    while ((m = re.exec(doc.text)) !== null) {
+      if (m[0] === '') { re.lastIndex++; continue; }
+      // número da linha (contagem incremental)
+      for (let i = doc.text.indexOf('\n', last); i !== -1 && i < m.index; i = doc.text.indexOf('\n', i + 1)) { line++; last = i + 1; }
+      const ls = doc.text.lastIndexOf('\n', m.index - 1) + 1;
+      let le = doc.text.indexOf('\n', m.index); if (le === -1) le = doc.text.length;
+      let from = ls, to = le;
+      if (to - from > 240) { from = Math.max(ls, m.index - 100); to = Math.min(le, m.index + m[0].length + 100); }
+      total++;
+      if (n < PER_DOC && results.length < MAX) {
+        results.push({ label: doc.label, line, before: doc.text.slice(from, m.index), hit: m[0], after: doc.text.slice(m.index + m[0].length, to), cut: from > ls || to < le });
+      }
+      n++;
+      if (results.length >= MAX) break;
+    }
+    if (results.length >= MAX) break;
+  }
+  return { results, total };
+}
+
+$('#searchForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const out = $('#searchOut'), term = $('#q').value;
+  if (!DATA) { out.className = 'muted'; out.textContent = 'Faça uma análise primeiro.'; return; }
+  if (!term) return;
+  let res;
+  try { res = runSearch(DATA, term, $('#rx').checked, $('#cs').checked); }
+  catch (err) { out.className = 'bad'; out.textContent = 'Expressão inválida: ' + err.message; return; }
+  out.className = '';
+  if (!res.results.length) { out.className = 'muted'; out.textContent = 'Nenhuma ocorrência.'; return; }
+  const tbl = el('table', {}, el('tr', {}, ...['Onde', 'Linha', 'Trecho'].map((h) => el('th', { textContent: h }))));
+  res.results.forEach((r) => tbl.append(el('tr', {},
+    el('td', { textContent: r.label }), el('td', { textContent: r.line }),
+    el('td', { className: 'snip' }, r.cut ? '…' : '', r.before, el('mark', { textContent: r.hit }), r.after, r.cut ? '…' : ''))));
+  out.replaceChildren(
+    el('p', { className: 'muted', textContent: `${res.total} ocorrência(s)` + (res.total > res.results.length ? ` — mostrando ${res.results.length}` : '') + '. Linhas de JS se referem ao código formatado.' }),
+    tbl);
+});
+
+function renderQuick() {
+  const q = $('#quick'); q.replaceChildren(el('span', { className: 'muted', textContent: 'Atalhos:' }));
+  ['apiKey', 'api_key', 'token', 'secret', 'password', '/api/', '/v1/', 'Bearer', 'firebase', 'supabase'].forEach((t) =>
+    q.append(el('span', { className: 'chip', style: 'cursor:pointer', textContent: t, onclick: () => { $('#q').value = t; $('#rx').checked = false; $('#searchForm').requestSubmit(); } })));
+}
+renderQuick();
+
+/* ---------- Exportar .zip ---------- */
+const loadScript = (src) => new Promise((res, rej) => document.head.append(el('script', { src, onload: res, onerror: () => rej(new Error('Falha ao carregar ' + src)) })));
+const pad = (n) => String(n).padStart(2, '0');
+const safePath = (p) => p.split('/').filter((s) => s && s !== '.' && s !== '..').map((s) => s.replace(/[<>:"\\|?*\x00-\x1f]/g, '_')).join('/') || 'unknown';
+
+$('#zip').addEventListener('click', async (ev) => {
+  const btn = ev.currentTarget; if (!DATA) return;
+  btn.disabled = true; const old = btn.textContent; btn.textContent = 'Gerando .zip...';
+  try {
+    if (!window.JSZip) await loadScript('/vendor/jszip.min.js');
+    const d = DATA, zip = new window.JSZip();
+    zip.file('dom.html', d.html);
+    zip.file('analysis.json', JSON.stringify({ meta: d.meta, stats: d.stats, tech: d.tech }, null, 2));
+    zip.file('apis.json', JSON.stringify(d.apiCalls, null, 2));
+    zip.file('assets.json', JSON.stringify(d.assets, null, 2));
+    d.scripts.forEach((j, i) => {
+      const base = safePath(jsName(j.url)).replace(/\//g, '_');
+      zip.file(`js/${pad(i + 1)}-${base}`, j.code);
+      if (j.sourceMap) j.sourceMap.files.forEach((f) => {
+        if (f.content !== undefined) zip.file(`sourcemaps/${pad(i + 1)}-${base}/${safePath(f.path)}`, f.content);
+      });
+    });
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+    let host = 'site'; try { host = new URL(d.meta.finalUrl).hostname; } catch {}
+    download(`analise-${host}.zip`, blob);
+  } catch (err) {
+    $('#status').className = 'err'; $('#status').textContent = 'Erro ao gerar zip: ' + err.message;
+  } finally { btn.disabled = false; btn.textContent = old; }
+});
 </script>
 </body>
 </html>

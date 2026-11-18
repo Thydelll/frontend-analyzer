@@ -39,6 +39,205 @@ const LAUNCH_ARGS = [
   '--no-first-run',
 ];
 
+// ---------- Source maps ----------
+const SM = {
+  maxMaps: 15,
+  maxMapBytes: 8 * 1024 * 1024,
+  contentBudget: 6 * 1024 * 1024, // total de código-fonte original devolvido (todas as maps)
+  maxFileChars: 400_000,
+  maxListed: 1500,
+  timeoutMs: 8_000,
+  parallel: 5,
+};
+const SM_COMMENT = /(?:\/\/|\/\*)[#@]\s*sourceMappingURL=([^\s'"*]+)/g;
+
+/** Procura o último comentário sourceMappingURL nos ~3 MB finais do arquivo. */
+function findSourceMapRef(buf) {
+  const tail = buf.subarray(Math.max(0, buf.length - 3 * 1024 * 1024)).toString('utf8');
+  let ref = null;
+  let m;
+  SM_COMMENT.lastIndex = 0;
+  while ((m = SM_COMMENT.exec(tail))) ref = m[1];
+  return ref;
+}
+
+function normalizeSourcePath(src, root) {
+  let p = String(root ? root.replace(/\/?$/, '/') + src : src);
+  try { p = decodeURIComponent(p); } catch { /* mantém */ }
+  p = p.replace(/^[a-z][a-z0-9+.-]*:\/\/\/?/i, '').replace(/\?.*$/, '');
+  p = p.split('/').filter((seg) => seg && seg !== '.' && seg !== '..').join('/');
+  return p || 'unknown';
+}
+
+function readInlineMap(ref) {
+  const m = /^data:[^,]*?(;base64)?,(.*)$/s.exec(ref);
+  if (!m) return null;
+  try { return m[1] ? Buffer.from(m[2], 'base64').toString('utf8') : decodeURIComponent(m[2]); }
+  catch { return null; }
+}
+
+function parseSourceMap(text, budget) {
+  let j;
+  try { j = JSON.parse(text); } catch { return { error: 'JSON inválido' }; }
+  if (!Array.isArray(j.sources)) return { error: 'formato de source map não suportado' };
+  const contents = Array.isArray(j.sourcesContent) ? j.sourcesContent : [];
+  const files = [];
+  const seen = new Set();
+  let withContent = 0;
+  j.sources.forEach((src, i) => {
+    let path = normalizeSourcePath(src, j.sourceRoot);
+    if (seen.has(path)) path = `${path}#${i}`;
+    seen.add(path);
+    // Código de terceiros/bundler: só lista o nome (poupa memória e ruído).
+    const vendor = /(^|\/)(node_modules|webpack\/(runtime|bootstrap))(\/|$)/.test(path);
+    const has = typeof contents[i] === 'string';
+    const entry = { path, vendor, size: has ? contents[i].length : null };
+    if (!vendor && has && budget.left > 0) {
+      let c = contents[i];
+      if (c.length > SM.maxFileChars) { c = c.slice(0, SM.maxFileChars); entry.truncated = true; }
+      budget.left -= c.length;
+      entry.content = c;
+      withContent++;
+    }
+    if (files.length < SM.maxListed) files.push(entry);
+  });
+  return { file: j.file || null, total: j.sources.length, withContent, files, budgetExhausted: budget.left <= 0 };
+}
+
+/** Baixa e interpreta os source maps referenciados pelos scripts capturados. */
+async function attachSourceMaps(context, scripts, hostIsPublic) {
+  const budget = { left: SM.contentBudget };
+  const work = async (s) => {
+    try {
+      let text;
+      let mapUrl;
+      if (/^data:/i.test(s.smRef)) {
+        text = readInlineMap(s.smRef);
+        mapUrl = 'inline';
+      } else {
+        mapUrl = new URL(s.smRef, s.url).href;
+        if (!/^https?:/i.test(mapUrl)) throw new Error('esquema não suportado');
+        if (!(await hostIsPublic(mapUrl))) throw new Error('host bloqueado (rede interna)');
+        const r = await context.request.get(mapUrl, { timeout: SM.timeoutMs, maxRedirects: 0, failOnStatusCode: false });
+        if (!r.ok()) throw new Error(`HTTP ${r.status()}`);
+        const buf = await r.body();
+        if (buf.length > SM.maxMapBytes) throw new Error('arquivo grande demais');
+        text = buf.toString('utf8');
+      }
+      if (!text) throw new Error('vazio');
+      const parsed = parseSourceMap(text, budget);
+      if (parsed.error) throw new Error(parsed.error);
+      s.sourceMap = { url: mapUrl, ...parsed };
+    } catch (e) {
+      s.sourceMapError = `${s.smRef.slice(0, 100)} → ${String(e.message).split('\n')[0]}`;
+    }
+  };
+  const todo = scripts.filter((s) => s.smRef).slice(0, SM.maxMaps);
+  for (let i = 0; i < todo.length; i += SM.parallel) {
+    await Promise.all(todo.slice(i, i + SM.parallel).map(work));
+  }
+  scripts.forEach((s) => { delete s.smRef; });
+}
+
+// ---------- Detecção de tecnologias ----------
+async function detectTechInPage(page) {
+  try {
+    return await page.evaluate(() => {
+      const out = [];
+      const add = (name, version, type, via) => out.push({ name, version: version ? String(version) : null, type, via });
+      const w = window;
+      const safe = (fn) => { try { fn(); } catch { /* ignora */ } };
+      const q = (s) => document.querySelector(s);
+
+      safe(() => { if (w.React && w.React.version) add('React', w.React.version, 'framework', 'global'); });
+      safe(() => {
+        const h = w.__REACT_DEVTOOLS_GLOBAL_HOOK__;
+        if (h && h.renderers) for (const r of h.renderers.values()) if (r && r.version) add('React', r.version, 'framework', 'devtools-hook');
+      });
+      safe(() => {
+        const roots = [q('#root'), q('#__next'), q('#app'), document.body && document.body.firstElementChild].filter(Boolean);
+        if (roots.some((el) => Object.keys(el).some((k) => k.startsWith('__reactContainer') || k.startsWith('_reactRootContainer')))) add('React', null, 'framework', 'dom');
+      });
+      safe(() => { if (w.__NEXT_DATA__ || q('#__next')) add('Next.js', (w.next && w.next.version) || null, 'framework', 'global'); });
+      safe(() => { if (w.__NUXT__ || w.$nuxt) add('Nuxt', null, 'framework', 'global'); });
+      safe(() => { if (w.Vue && w.Vue.version) add('Vue', w.Vue.version, 'framework', 'global'); });
+      safe(() => {
+        const a = q('#app');
+        if (a && a.__vue_app__) add('Vue', a.__vue_app__.version, 'framework', 'dom');
+        else if (a && a.__vue__) add('Vue', a.__vue__.$root.constructor.version || '2.x', 'framework', 'dom');
+      });
+      safe(() => { const el = q('[ng-version]'); if (el) add('Angular', el.getAttribute('ng-version'), 'framework', 'dom'); });
+      safe(() => { if (w.angular && w.angular.version) add('AngularJS', w.angular.version.full, 'framework', 'global'); });
+      safe(() => { if (q('[class*="svelte-"]')) add('Svelte', null, 'framework', 'dom'); });
+      safe(() => { if (q('#___gatsby')) add('Gatsby', null, 'framework', 'dom'); });
+      safe(() => { if (w.__remixContext) add('Remix', null, 'framework', 'global'); });
+      safe(() => { if (q('astro-island, [data-astro-cid]')) add('Astro', null, 'framework', 'dom'); });
+      safe(() => { if (w.jQuery && w.jQuery.fn) add('jQuery', w.jQuery.fn.jquery, 'library', 'global'); });
+      safe(() => {
+        const v = (w.bootstrap && w.bootstrap.Tooltip && w.bootstrap.Tooltip.VERSION) ||
+          (w.jQuery && w.jQuery.fn && w.jQuery.fn.tooltip && w.jQuery.fn.tooltip.Constructor && w.jQuery.fn.tooltip.Constructor.VERSION);
+        if (v) add('Bootstrap', v, 'library', 'global');
+      });
+      safe(() => { if (w._ && w._.VERSION) add('Lodash', w._.VERSION, 'library', 'global'); });
+      safe(() => { if (w.moment && w.moment.version) add('Moment.js', w.moment.version, 'library', 'global'); });
+      safe(() => { if (w.axios) add('Axios', null, 'library', 'global'); });
+      safe(() => { if (w.Alpine) add('Alpine.js', w.Alpine.version, 'library', 'global'); });
+      safe(() => { if (w.htmx) add('htmx', w.htmx.version, 'library', 'global'); });
+      safe(() => { if (w.THREE && w.THREE.REVISION) add('Three.js', 'r' + w.THREE.REVISION, 'library', 'global'); });
+      safe(() => {
+        const g = q('meta[name="generator"]');
+        if (g && g.content) {
+          const name = g.content.replace(/\s*\d.*$/, '').trim() || g.content;
+          add(name, (g.content.match(/\d+(?:\.\d+)+/) || [null])[0], 'cms', 'meta generator');
+        }
+      });
+      safe(() => { if (w.Shopify) add('Shopify', null, 'cms', 'global'); });
+      safe(() => { if (q('html[data-wf-site]')) add('Webflow', null, 'cms', 'dom'); });
+      safe(() => { if (w.google_tag_manager) add('Google Tag Manager', null, 'analytics', 'global'); });
+      safe(() => { if (w.gtag || w.ga || w.dataLayer) add('Google Analytics/gtag', null, 'analytics', 'global'); });
+      safe(() => { if (w.fbq) add('Meta Pixel', null, 'analytics', 'global'); });
+      safe(() => { if (w.hj) add('Hotjar', null, 'analytics', 'global'); });
+      return out;
+    });
+  } catch { return []; }
+}
+
+function techFromHeaders(h) {
+  const out = [];
+  const add = (name, version, via) => out.push({ name, version: version || null, type: 'infra', via });
+  const split = (v) => { const [n, ver] = String(v).split('/'); return [n.trim(), ver && ver.split(/\s/)[0]]; };
+  if (h.server) add(...split(h.server), 'header server');
+  if (h['x-powered-by']) add(...split(h['x-powered-by']), 'header x-powered-by');
+  if (h['cf-ray']) add('cloudflare', null, 'header cf-ray');
+  if (h['x-vercel-id']) add('Vercel', null, 'header x-vercel-id');
+  if (h['x-nf-request-id']) add('Netlify', null, 'header x-nf-request-id');
+  if (h['x-amz-cf-id']) add('Amazon CloudFront', null, 'header x-amz-cf-id');
+  return out;
+}
+
+const URL_HINT = /(jquery|react-dom|react|vue|angular|bootstrap|lodash|moment|axios|alpine|htmx)(?:\.min)?[-@./]v?(\d+\.\d+(?:\.\d+)?)/i;
+const HINT_NAMES = { jquery: 'jQuery', 'react-dom': 'React', react: 'React', vue: 'Vue', angular: 'Angular', bootstrap: 'Bootstrap', lodash: 'Lodash', moment: 'Moment.js', axios: 'Axios', alpine: 'Alpine.js', htmx: 'htmx' };
+function techFromUrls(urls) {
+  const out = [];
+  for (const u of urls) {
+    const m = URL_HINT.exec(u);
+    if (m) out.push({ name: HINT_NAMES[m[1].toLowerCase()], version: m[2], type: 'library', via: 'nome do arquivo' });
+  }
+  return out;
+}
+
+const TECH_ORDER = { framework: 0, library: 1, cms: 2, infra: 3, analytics: 4 };
+function mergeTech(list) {
+  const map = new Map();
+  for (const t of list) {
+    const k = t.name.toLowerCase();
+    const cur = map.get(k);
+    if (!cur) map.set(k, t);
+    else if (!cur.version && t.version) map.set(k, { ...cur, version: t.version, via: t.via });
+  }
+  return [...map.values()].sort((a, b) => (TECH_ORDER[a.type] ?? 9) - (TECH_ORDER[b.type] ?? 9) || a.name.localeCompare(b.name));
+}
+
 // O plugin de stealth envia comandos CDP em segundo plano. Se o contexto fecha nesse
 // meio-tempo (ex.: navegação que falha de imediato), a promessa rejeita sem dono e,
 // no Node 15+, isso derrubaria o processo inteiro. Ignoramos só esse erro benigno.
@@ -221,6 +420,8 @@ async function analyze(targetUrl, opts = {}) {
       // --- Arquivos JS ---
       if (type === 'script' && !seenJs.has(url) && seenJs.size < LIMITS.maxJsFiles) {
         seenJs.add(url);
+        const hdrs = response.headers();
+        const smHeader = hdrs.sourcemap || hdrs['x-sourcemap'] || null;
         jobs.push(
           response.body()
             .then((buf) => {
@@ -229,7 +430,10 @@ async function analyze(targetUrl, opts = {}) {
               let pretty;
               try { pretty = beautify.js(raw, { indent_size: 2, preserve_newlines: true, max_preserve_newlines: 2 }); }
               catch { pretty = raw; }
-              scripts.push({ url, bytes: buf.length, truncated, code: pretty });
+              scripts.push({
+                url, bytes: buf.length, truncated, code: pretty,
+                smRef: smHeader || findSourceMapRef(buf), // removido depois de resolver o map
+              });
             })
             .catch(() => {})
         );
@@ -239,9 +443,11 @@ async function analyze(targetUrl, opts = {}) {
     // Navegação: tenta networkidle e cai para o que carregou se o site nunca "quietar".
     let navError = null;
     let mainStatus = null;
+    let mainHeaders = {};
     try {
       const resp = await page.goto(startUrl, { waitUntil: 'networkidle', timeout: LIMITS.navTimeoutMs });
       mainStatus = resp ? resp.status() : null;
+      mainHeaders = resp ? resp.headers() : {};
     } catch (e) {
       navError = friendlyError(e);
       if (page.url() === 'about:blank') throw new Error(navError);
@@ -267,6 +473,14 @@ async function analyze(targetUrl, opts = {}) {
     await Promise.allSettled(jobs);
     scripts.sort((a, b) => a.url.localeCompare(b.url));
 
+    // Source maps (código original) e tecnologias detectadas
+    await attachSourceMaps(context, scripts, hostIsPublic);
+    const tech = mergeTech([
+      ...(await detectTechInPage(page)),
+      ...techFromHeaders(mainHeaders),
+      ...techFromUrls(scripts.map((s) => s.url)),
+    ]);
+
     const warnings = [];
     if (navError) warnings.push(navError);
     if ([401, 403, 429, 503].includes(mainStatus)) {
@@ -289,7 +503,10 @@ async function analyze(targetUrl, opts = {}) {
       assets,
       apiCalls,
       scripts,
+      tech,
       stats: {
+        techCount: tech.length,
+        sourceMaps: scripts.filter((s) => s.sourceMap).length,
         images: assets.images.length,
         fonts: assets.fonts.length,
         stylesheets: assets.stylesheets.length,

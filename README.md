@@ -36,6 +36,13 @@ frontend-analyzer/
 | `MAX_CONCURRENT` | `2` | Análises simultâneas |
 | `TRUST_PROXY` | vazio | `1` atrás de proxy reverso, para o rate limit ver o IP real |
 
+## Modo leve e memória
+
+- **Modo leve** (padrão, caixa no dashboard ou `"light": false` na API para desligar): não baixa imagens, fontes e mídia; só lista as URLs. Usa bem menos memória. Desligado, o DOM fica mais fiel.
+- Um único Chromium é compartilhado entre análises (contexto isolado por análise), é recriado se cair e fecha após 60 s ocioso.
+- Toda requisição feita pela página passa pela validação anti-SSRF (hosts internos são bloqueados).
+- `CHROMIUM_PATH` (opcional): caminho de um Chrome/Chromium já instalado.
+
 ## Deploy (Railway)
 
 1. Suba o projeto para um repositório no GitHub (o `.gitignore` já ignora `node_modules`).

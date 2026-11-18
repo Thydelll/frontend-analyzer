@@ -47,6 +47,9 @@
     <input type="password" id="token" placeholder="Token de acesso" autocomplete="off" hidden style="width:200px;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--text)">
     <button id="go" type="submit">Analisar</button>
   </form>
+  <label style="display:flex;gap:8px;align-items:center;margin-top:10px;color:var(--muted);cursor:pointer" title="Não baixa imagens, fontes e vídeos (só lista as URLs). Usa bem menos memória.">
+    <input type="checkbox" id="light" checked> Modo leve <small>(não baixa imagens/fontes/vídeos; use desligado para um DOM mais fiel)</small>
+  </label>
 </header>
 <div id="status">Informe uma URL (apenas sites que você tem autorização para analisar).</div>
 
@@ -78,6 +81,10 @@ const download = (name, text) => {
   a.click(); URL.revokeObjectURL(a.href);
 };
 
+// Lembra a escolha do modo leve
+try { const v = localStorage.getItem('fa_light'); if (v !== null) $('#light').checked = v === '1'; } catch {}
+$('#light').addEventListener('change', (e) => { try { localStorage.setItem('fa_light', e.target.checked ? '1' : '0'); } catch {} });
+
 // Mostra o campo de token só se o servidor exigir
 fetch('/api/config').then((r) => r.json()).then((c) => {
   if (!c.authRequired) return;
@@ -103,7 +110,7 @@ $('#form').addEventListener('submit', async (e) => {
     if (tk) headers.Authorization = 'Bearer ' + tk;
     const r = await fetch('/api/analyze', {
       method: 'POST', headers,
-      body: JSON.stringify({ url: $('#url').value.trim() }),
+      body: JSON.stringify({ url: $('#url').value.trim(), light: $('#light').checked }),
     });
     const data = await r.json();
     if (r.status === 401) { try { localStorage.removeItem('fa_token'); } catch {} }
@@ -138,7 +145,7 @@ function render(d) {
     const tbl = el('table', {}, el('tr', {}, ...['URL', 'Status', 'Tipo'].map((h) => el('th', { textContent: h }))));
     list.forEach((a) => tbl.append(el('tr', {},
       el('td', {}, el('a', { href: a.url, target: '_blank', rel: 'noreferrer noopener', textContent: a.url, style: 'color:var(--accent)' })),
-      el('td', { textContent: a.status }), el('td', { textContent: a.contentType || '-' }))));
+      el('td', { textContent: a.skipped ? 'não baixado (modo leve)' : a.status }), el('td', { textContent: a.contentType || '-' }))));
     assetsEl.append(tbl);
   }
 

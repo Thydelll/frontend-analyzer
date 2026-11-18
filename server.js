@@ -3,7 +3,7 @@
 const path = require('node:path');
 const crypto = require('node:crypto');
 const express = require('express');
-const { analyze } = require('./src/scraper');
+const { analyze, closeBrowser } = require('./src/scraper');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '127.0.0.1'; // só local por padrão
@@ -72,7 +72,7 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, running }));
 app.get('/api/config', (_req, res) => res.json({ authRequired: Boolean(API_TOKEN) }));
 
 app.post('/api/analyze', rateLimit, requireAuth, async (req, res) => {
-  const { url } = req.body || {};
+  const { url, light } = req.body || {};
   if (!url || typeof url !== 'string') {
     return res.status(400).json({ error: 'Informe "url" no corpo JSON.' });
   }
@@ -81,7 +81,7 @@ app.post('/api/analyze', rateLimit, requireAuth, async (req, res) => {
   }
   running++;
   try {
-    res.json(await analyze(url));
+    res.json(await analyze(url, { light: light !== false })); // modo leve é o padrão
   } catch (err) {
     console.error('[analyze]', err.message);
     res.status(502).json({ error: err.message });
@@ -95,4 +95,4 @@ const server = app.listen(PORT, HOST, () => {
 });
 
 // Encerramento limpo (Railway envia SIGTERM em redeploy)
-process.on('SIGTERM', () => server.close(() => process.exit(0)));
+process.on('SIGTERM', () => server.close(async () => { await closeBrowser(); process.exit(0); }));

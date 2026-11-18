@@ -42,6 +42,8 @@ frontend-analyzer/
 - **Tecnologias:** frameworks, bibliotecas, CMS, servidor/CDN e analytics, detectados por variáveis globais, DOM, cabeçalhos e nomes de arquivo.
 - **Busca:** texto ou regex no HTML, JS, URLs/headers/respostas das APIs e código original.
 - **Baixar tudo (.zip):** DOM, JS formatado, JSON das APIs/assets e código original dos source maps. O zip é gerado no navegador (JSZip servido em `/vendor/jszip.min.js`).
+- **Screenshot (opcional):** JPEG da página renderizada (até 4000 px de altura). Ao marcar, o Modo leve é desligado para a imagem sair completa. Entra no zip como `screenshot.jpg`.
+- **Progresso em tempo real:** `POST /api/analyze/stream` responde em NDJSON (`progress`, `ping`, `result`, `error`); se o cliente desconectar, a análise é cancelada. `POST /api/analyze` continua devolvendo um JSON único (aceita `light` e `screenshot`).
 - **Recentes:** as últimas 10 URLs analisadas, guardadas só no navegador.
 
 ## Modo leve e memória

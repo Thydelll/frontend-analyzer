@@ -75,7 +75,7 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, running }));
 app.get('/api/config', (_req, res) => res.json({ authRequired: Boolean(API_TOKEN) }));
 
 app.post('/api/analyze', rateLimit, requireAuth, async (req, res) => {
-  const { url, light } = req.body || {};
+  const { url, light, screenshot } = req.body || {};
   if (!url || typeof url !== 'string') {
     return res.status(400).json({ error: 'Informe "url" no corpo JSON.' });
   }
@@ -84,12 +84,53 @@ app.post('/api/analyze', rateLimit, requireAuth, async (req, res) => {
   }
   running++;
   try {
-    res.json(await analyze(url, { light: light !== false })); // modo leve é o padrão
+    res.json(await analyze(url, { light: light !== false, screenshot: !!screenshot })); // modo leve é o padrão
   } catch (err) {
     console.error('[analyze]', err.message);
     res.status(502).json({ error: err.message });
   } finally {
     running--;
+  }
+});
+
+// Mesma análise, mas com progresso em tempo real: resposta em NDJSON (uma linha JSON por evento).
+// Eventos: {type:'progress',step,message,pct} | {type:'ping'} | {type:'result',data} | {type:'error',error}
+app.post('/api/analyze/stream', rateLimit, requireAuth, async (req, res) => {
+  const { url, light, screenshot } = req.body || {};
+  if (!url || typeof url !== 'string') {
+    return res.status(400).json({ error: 'Informe "url" no corpo JSON.' });
+  }
+  if (running >= MAX_CONCURRENT) {
+    return res.status(429).json({ error: 'Muitas análises em andamento. Tente novamente em instantes.' });
+  }
+  running++;
+  res.status(200).set({
+    'Content-Type': 'application/x-ndjson; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    'X-Accel-Buffering': 'no', // evita buffer em proxies (nginx etc.)
+  });
+  res.flushHeaders();
+
+  let cancelled = false; // o cliente fechou a aba/conexão antes do fim
+  res.on('close', () => { if (!res.writableFinished) cancelled = true; });
+  const send = (obj) => { if (!cancelled && !res.writableEnded) res.write(JSON.stringify(obj) + '\n'); };
+  const heartbeat = setInterval(() => send({ type: 'ping' }), 10_000); // mantém a conexão viva
+
+  try {
+    const data = await analyze(url, {
+      light: light !== false,
+      screenshot: !!screenshot,
+      onProgress: (p) => send({ type: 'progress', ...p }),
+      isCancelled: () => cancelled,
+    });
+    send({ type: 'result', data });
+  } catch (err) {
+    if (!cancelled) console.error('[analyze]', err.message);
+    send({ type: 'error', error: err.message });
+  } finally {
+    clearInterval(heartbeat);
+    running--;
+    if (!res.writableEnded) res.end();
   }
 });
 

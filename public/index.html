@@ -51,6 +51,9 @@
   .searchbar input[type=text] { flex:1; min-width:200px; }
   mark { background:#5a4a1c; color:var(--warn); padding:0 2px; border-radius:3px; }
   .snip { font-family:ui-monospace,Consolas,monospace; font-size:12.5px; white-space:pre-wrap; }
+  #progress { height:4px; background:var(--line); margin:0 20px; border-radius:4px; overflow:hidden; }
+  #bar { height:100%; width:0; background:var(--accent); transition:width .4s; }
+  .shot { max-width:100%; border:1px solid var(--line); border-radius:8px; background:#fff; }
   .vendor { color:var(--muted); padding:2px 12px; font-size:12.5px; word-break:break-all; }
 </style>
 </head>
@@ -65,8 +68,12 @@
   <label style="display:flex;gap:8px;align-items:center;margin-top:10px;color:var(--muted);cursor:pointer" title="Não baixa imagens, fontes e vídeos (só lista as URLs). Usa bem menos memória.">
     <input type="checkbox" id="light" checked> Modo leve <small>(não baixa imagens/fontes/vídeos; desligue para um DOM mais fiel)</small>
   </label>
+  <label style="display:flex;gap:8px;align-items:center;margin-top:6px;color:var(--muted);cursor:pointer" title="Imagem JPEG da página renderizada (até 4000 px de altura).">
+    <input type="checkbox" id="shot"> Screenshot <small>(ao marcar, o Modo leve é desligado para a imagem sair completa)</small>
+  </label>
   <div id="history"></div>
 </header>
+<div id="progress" hidden><div id="bar"></div></div>
 <div id="statusRow">
   <div id="status">Informe uma URL (apenas sites que você tem autorização para analisar).</div>
   <button id="zip" class="ghost" type="button" hidden>⬇ Baixar tudo (.zip)</button>
@@ -78,6 +85,7 @@
   <button data-tab="assets">Assets</button>
   <button data-tab="api">APIs / XHR</button>
   <button data-tab="js">JavaScript</button>
+  <button data-tab="screenshot">Screenshot</button>
   <button data-tab="maps">Source maps</button>
   <button data-tab="search">Busca</button>
 </nav>
@@ -88,6 +96,7 @@
   <section id="assets" class="tab"></section>
   <section id="api" class="tab"></section>
   <section id="js" class="tab"></section>
+  <section id="screenshot" class="tab"></section>
   <section id="maps" class="tab"></section>
   <section id="search" class="tab">
     <form id="searchForm" class="searchbar">
@@ -157,36 +166,81 @@ function renderHistory() {
 }
 renderHistory();
 
+/* ---------- Screenshot x modo leve ---------- */
+$('#shot').addEventListener('change', (e) => { if (e.target.checked) { $('#light').checked = false; try { localStorage.setItem('fa_light', '0'); } catch {} } });
+
+/* ---------- Progresso em tempo real (NDJSON) ---------- */
+function showProgress(m) {
+  if (m.message) $('#status').textContent = m.message;
+  if (typeof m.pct === 'number') $('#bar').style.width = m.pct + '%';
+}
+async function readStream(resp) {
+  const reader = resp.body.getReader(), dec = new TextDecoder();
+  let buf = '', result = null;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+      if (!line) continue;
+      const m = JSON.parse(line);
+      if (m.type === 'progress') showProgress(m);
+      else if (m.type === 'result') result = m.data;
+      else if (m.type === 'error') throw new Error(m.error);
+    }
+  }
+  if (!result) throw new Error('A conexão foi encerrada antes do fim da análise (o servidor pode ter ficado sem memória). Tente de novo com o Modo leve.');
+  return result;
+}
+
 /* ---------- Análise ---------- */
 $('#form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const btn = $('#go'), status = $('#status');
-  btn.disabled = true; status.className = ''; status.textContent = 'Analisando... (pode levar até ~1 min)';
+  btn.disabled = true; status.className = ''; status.textContent = 'Enviando…';
+  $('#progress').hidden = false; $('#bar').style.width = '2%';
   const light = $('#light').checked;
   try {
     const tk = $('#token').value.trim();
     try { if (tk) localStorage.setItem('fa_token', tk); } catch {}
     const headers = { 'Content-Type': 'application/json' };
     if (tk) headers.Authorization = 'Bearer ' + tk;
-    const r = await fetch('/api/analyze', {
+    const r = await fetch('/api/analyze/stream', {
       method: 'POST', headers,
-      body: JSON.stringify({ url: $('#url').value.trim(), light }),
+      body: JSON.stringify({ url: $('#url').value.trim(), light, screenshot: $('#shot').checked }),
     });
-    const data = await r.json();
-    if (r.status === 401) { try { localStorage.removeItem('fa_token'); } catch {} }
-    if (!r.ok) throw new Error(data.error || 'Erro desconhecido');
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 401) { try { localStorage.removeItem('fa_token'); } catch {} }
+      throw new Error(j.error || 'Erro HTTP ' + r.status);
+    }
+    const data = await readStream(r);
     DATA = data;
     render(data);
     saveHistory(data, light);
     status.textContent = `Concluído em ${(data.meta.durationMs / 1000).toFixed(1)}s — ${data.meta.finalUrl}`;
   } catch (err) {
     status.className = 'err'; status.textContent = 'Erro: ' + err.message;
-  } finally { btn.disabled = false; }
+  } finally { btn.disabled = false; setTimeout(() => { $('#progress').hidden = true; }, 600); }
 });
+
+function renderShot(d) {
+  const box = $('#screenshot'); box.replaceChildren();
+  const s = d.screenshot;
+  if (!s) { box.append(el('p', { className: 'muted', textContent: 'Sem screenshot nesta análise. Marque "Screenshot" antes de analisar.' })); return; }
+  const src = `data:${s.mime};base64,${s.base64}`;
+  box.append(
+    el('div', { className: 'toolbar' },
+      el('button', { className: 'ghost', textContent: 'Baixar imagem (.jpg)', onclick: () => download('screenshot.jpg', Uint8Array.from(atob(s.base64), (c) => c.charCodeAt(0))) }),
+      el('span', { className: 'muted', textContent: `${s.width}×${s.height}px` + (s.cropped ? ` (cortado; a página tem ${s.fullHeight}px)` : '') })),
+    el('img', { className: 'shot', src, alt: 'Screenshot da página' }));
+}
 
 function render(d) {
   $('#zip').hidden = false;
-  renderSummary(d); renderHtml(d); renderAssets(d); renderApis(d); renderJs(d); renderMaps(d);
+  renderSummary(d); renderHtml(d); renderAssets(d); renderApis(d); renderJs(d); renderMaps(d); renderShot(d);
   $('#searchOut').className = 'muted';
   $('#searchOut').textContent = 'Digite um termo e clique em Buscar.';
   renderQuick();
@@ -391,6 +445,7 @@ $('#zip').addEventListener('click', async (ev) => {
     zip.file('analysis.json', JSON.stringify({ meta: d.meta, stats: d.stats, tech: d.tech }, null, 2));
     zip.file('apis.json', JSON.stringify(d.apiCalls, null, 2));
     zip.file('assets.json', JSON.stringify(d.assets, null, 2));
+    if (d.screenshot) zip.file('screenshot.jpg', d.screenshot.base64, { base64: true });
     d.scripts.forEach((j, i) => {
       const base = safePath(jsName(j.url)).replace(/\//g, '_');
       zip.file(`js/${pad(i + 1)}-${base}`, j.code);

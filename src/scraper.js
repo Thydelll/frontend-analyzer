@@ -23,6 +23,8 @@ const LIMITS = {
   browserIdleMs: 60_000,       // fecha o Chromium após 60 s sem uso (libera memória)
 };
 
+const SHOT = { width: 1366, maxHeight: 4000, quality: 60 }; // JPEG, só até 4000 px de altura
+
 const TEXTUAL = /json|text|xml|javascript|graphql|html/i;
 const BUCKETS = { image: 'images', font: 'fonts', stylesheet: 'stylesheets', media: 'media' };
 const LIGHT_BLOCKED = new Set(['image', 'font', 'media']);
@@ -308,6 +310,12 @@ function friendlyError(err) {
  */
 async function analyze(targetUrl, opts = {}) {
   const light = opts.light !== false;
+  // Progresso em tempo real + cancelamento (cliente desconectou).
+  const step = (name, message, pct) => {
+    if (opts.isCancelled && opts.isCancelled()) throw new Error('Análise cancelada.');
+    if (opts.onProgress) { try { opts.onProgress({ step: name, message, pct }); } catch { /* ignora */ } }
+  };
+  step('start', 'Validando a URL…', 3);
   let startUrl;
   try { startUrl = await assertPublicUrl(targetUrl); }
   catch (e) { throw new Error(friendlyError(e)); }
@@ -317,6 +325,7 @@ async function analyze(targetUrl, opts = {}) {
   clearTimeout(idleTimer);
   let context;
   try {
+    step('browser', 'Iniciando o navegador…', 10);
     // Uma nova tentativa se o Chromium compartilhado tiver morrido entre análises.
     for (let attempt = 0; ; attempt++) {
       try {
@@ -376,6 +385,8 @@ async function analyze(targetUrl, opts = {}) {
     });
 
     const page = await context.newPage();
+    let reqCount = 0;
+    page.on('request', () => { reqCount++; });
 
     page.on('response', (response) => {
       const request = response.request();
@@ -444,6 +455,18 @@ async function analyze(targetUrl, opts = {}) {
     let navError = null;
     let mainStatus = null;
     let mainHeaders = {};
+    step('navigate', 'Carregando a página…', 25);
+    // Enquanto a página carrega, informa quantas requisições já foram feitas.
+    const tick = setInterval(() => {
+      if (!opts.onProgress) return;
+      try {
+        opts.onProgress({
+          step: 'navigate',
+          message: `Carregando a página… ${reqCount} requisições, ${apiCalls.length} chamada(s) de API`,
+          pct: Math.min(50, 25 + Math.floor(reqCount / 4)),
+        });
+      } catch { /* ignora */ }
+    }, 1000);
     try {
       const resp = await page.goto(startUrl, { waitUntil: 'networkidle', timeout: LIMITS.navTimeoutMs });
       mainStatus = resp ? resp.status() : null;
@@ -451,10 +474,14 @@ async function analyze(targetUrl, opts = {}) {
     } catch (e) {
       navError = friendlyError(e);
       if (page.url() === 'about:blank') throw new Error(navError);
+    } finally {
+      clearInterval(tick);
     }
+    step('settle', 'Aguardando requisições tardias…', 55);
     await page.waitForTimeout(LIMITS.settleMs);
 
     // Scroll para disparar lazy-loading
+    step('scroll', 'Rolando a página (lazy-loading)…', 62);
     await page.evaluate(async () => {
       for (let y = 0; y < document.body.scrollHeight; y += 600) {
         window.scrollTo(0, y);
@@ -464,17 +491,41 @@ async function analyze(targetUrl, opts = {}) {
     }).catch(() => {});
     await page.waitForTimeout(800);
 
+    // Screenshot (opcional): JPEG, altura limitada para não estourar a memória.
+    let screenshot = null;
+    let shotWarning = null;
+    if (opts.screenshot) {
+      step('screenshot', 'Tirando o screenshot…', 68);
+      try {
+        const fullH = await page.evaluate(() => Math.max(
+          document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0));
+        const h = Math.max(1, Math.min(fullH || 768, SHOT.maxHeight));
+        const buf = await page.screenshot({
+          type: 'jpeg', quality: SHOT.quality, fullPage: true,
+          clip: { x: 0, y: 0, width: SHOT.width, height: h },
+        });
+        screenshot = {
+          mime: 'image/jpeg', base64: buf.toString('base64'),
+          width: SHOT.width, height: h, fullHeight: fullH, cropped: fullH > h,
+        };
+      } catch (e) { shotWarning = 'Screenshot falhou: ' + friendlyError(e); }
+    }
+
     // DOM final renderizado
+    step('dom', 'Capturando o DOM renderizado…', 74);
     const title = await page.title();
     let html = await page.content();
     const htmlTruncated = html.length > LIMITS.maxHtmlChars;
     if (htmlTruncated) html = html.slice(0, LIMITS.maxHtmlChars);
 
+    step('scripts', `Processando ${scripts.length} script(s) e ${apiCalls.length} chamada(s) de API…`, 80);
     await Promise.allSettled(jobs);
     scripts.sort((a, b) => a.url.localeCompare(b.url));
 
     // Source maps (código original) e tecnologias detectadas
+    step('sourcemaps', 'Buscando source maps…', 88);
     await attachSourceMaps(context, scripts, hostIsPublic);
+    step('tech', 'Detectando tecnologias…', 95);
     const tech = mergeTech([
       ...(await detectTechInPage(page)),
       ...techFromHeaders(mainHeaders),
@@ -483,11 +534,15 @@ async function analyze(targetUrl, opts = {}) {
 
     const warnings = [];
     if (navError) warnings.push(navError);
+    if (shotWarning) warnings.push(shotWarning);
+    if (screenshot && light) warnings.push('Screenshot tirado em modo leve: a página aparece sem imagens e fontes.');
+    if (screenshot && screenshot.cropped) warnings.push(`Screenshot cortado em ${screenshot.height}px (a página tem ${screenshot.fullHeight}px).`);
     if ([401, 403, 429, 503].includes(mainStatus)) {
       warnings.push(`O site respondeu ${mainStatus}: provavelmente bloqueou o acesso automatizado (WAF/CAPTCHA). O resultado pode estar incompleto.`);
     }
     if (blockedCount) warnings.push(`${blockedCount} requisição(ões) para redes internas foram bloqueadas.`);
 
+    step('done', 'Concluído', 100);
     return {
       meta: {
         requestedUrl: startUrl,
@@ -504,6 +559,7 @@ async function analyze(targetUrl, opts = {}) {
       apiCalls,
       scripts,
       tech,
+      screenshot,
       stats: {
         techCount: tech.length,
         sourceMaps: scripts.filter((s) => s.sourceMap).length,

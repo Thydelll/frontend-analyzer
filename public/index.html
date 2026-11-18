@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frontend Analyzer</title>
+<style>
+  :root { --bg:#0f1115; --panel:#181b22; --line:#2a2f3a; --text:#e6e8ee; --muted:#8b93a7; --accent:#5b8cff; --ok:#3ecf8e; --err:#ff6b6b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:16px 20px; border-bottom:1px solid var(--line); }
+  h1 { margin:0 0 12px; font-size:18px; }
+  form { display:flex; gap:8px; }
+  input[type=url] { flex:1; padding:10px 12px; border-radius:8px; border:1px solid var(--line); background:var(--panel); color:var(--text); }
+  button { padding:10px 16px; border-radius:8px; border:0; background:var(--accent); color:#fff; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:wait; }
+  #status { padding:10px 20px; color:var(--muted); }
+  #status.err { color:var(--err); }
+  nav { display:flex; gap:4px; padding:0 20px; border-bottom:1px solid var(--line); overflow-x:auto; }
+  nav button { background:transparent; color:var(--muted); border-radius:0; border-bottom:2px solid transparent; }
+  nav button.active { color:var(--text); border-color:var(--accent); }
+  main { padding:20px; }
+  .tab { display:none; } .tab.active { display:block; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .card b { display:block; font-size:22px; }
+  .card span { color:var(--muted); }
+  pre { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; overflow:auto; max-height:70vh; white-space:pre-wrap; word-break:break-all; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:8px; border-bottom:1px solid var(--line); vertical-align:top; word-break:break-all; }
+  th { color:var(--muted); font-weight:500; }
+  details { background:var(--panel); border:1px solid var(--line); border-radius:8px; margin-bottom:8px; }
+  summary { padding:10px 12px; cursor:pointer; word-break:break-all; }
+  details pre { margin:0; border:0; border-top:1px solid var(--line); border-radius:0 0 8px 8px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:6px; background:var(--line); margin-right:6px; font-size:12px; }
+  .ok { color:var(--ok); } .bad { color:var(--err); }
+  h3 { margin:20px 0 8px; }
+  .toolbar { margin-bottom:10px; display:flex; gap:8px; }
+  .toolbar button { padding:6px 12px; background:var(--line); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔎 Frontend Analyzer</h1>
+  <form id="form">
+    <input type="url" id="url" placeholder="https://exemplo.com" required>
+    <input type="password" id="token" placeholder="Token de acesso" autocomplete="off" hidden style="width:200px;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--text)">
+    <button id="go" type="submit">Analisar</button>
+  </form>
+</header>
+<div id="status">Informe uma URL (apenas sites que você tem autorização para analisar).</div>
+
+<nav id="tabs">
+  <button data-tab="summary" class="active">Resumo</button>
+  <button data-tab="html">HTML (DOM)</button>
+  <button data-tab="assets">Assets</button>
+  <button data-tab="api">APIs / XHR</button>
+  <button data-tab="js">JavaScript</button>
+</nav>
+
+<main>
+  <section id="summary" class="tab active"></section>
+  <section id="html" class="tab"></section>
+  <section id="assets" class="tab"></section>
+  <section id="api" class="tab"></section>
+  <section id="js" class="tab"></section>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const el = (tag, props = {}, ...kids) => {
+  const n = Object.assign(document.createElement(tag), props);
+  kids.flat().forEach((k) => n.append(k));
+  return n;
+};
+const download = (name, text) => {
+  const a = el('a', { href: URL.createObjectURL(new Blob([text])), download: name });
+  a.click(); URL.revokeObjectURL(a.href);
+};
+
+// Mostra o campo de token só se o servidor exigir
+fetch('/api/config').then((r) => r.json()).then((c) => {
+  if (!c.authRequired) return;
+  const t = $('#token'); t.hidden = false; t.required = true;
+  try { t.value = sessionStorage.getItem('fa_token') || ''; } catch {}
+}).catch(() => {});
+
+// Troca de abas
+$('#tabs').addEventListener('click', (e) => {
+  const t = e.target.dataset.tab; if (!t) return;
+  document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('active', b === e.target));
+  document.querySelectorAll('.tab').forEach((s) => s.classList.toggle('active', s.id === t));
+});
+
+$('#form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = $('#go'), status = $('#status');
+  btn.disabled = true; status.className = ''; status.textContent = 'Analisando... (pode levar até ~1 min)';
+  try {
+    const tk = $('#token').value.trim();
+    try { if (tk) sessionStorage.setItem('fa_token', tk); } catch {}
+    const headers = { 'Content-Type': 'application/json' };
+    if (tk) headers.Authorization = 'Bearer ' + tk;
+    const r = await fetch('/api/analyze', {
+      method: 'POST', headers,
+      body: JSON.stringify({ url: $('#url').value.trim() }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Erro desconhecido');
+    render(data);
+    status.textContent = `Concluído em ${(data.meta.durationMs / 1000).toFixed(1)}s — ${data.meta.finalUrl}` +
+      (data.meta.navigationWarning ? ` (aviso: ${data.meta.navigationWarning})` : '');
+  } catch (err) {
+    status.className = 'err'; status.textContent = 'Erro: ' + err.message;
+  } finally { btn.disabled = false; }
+});
+
+function render(d) {
+  // Resumo
+  const s = d.stats;
+  $('#summary').replaceChildren(
+    el('div', { className: 'cards' },
+      Object.entries({ 'Imagens': s.images, 'Fontes': s.fonts, 'CSS': s.stylesheets, 'APIs XHR/Fetch': s.apiCalls, 'Arquivos JS': s.scripts, 'HTML (chars)': s.htmlChars })
+        .map(([k, v]) => el('div', { className: 'card' }, el('b', { textContent: v }), el('span', { textContent: k })))),
+    el('h3', { textContent: d.meta.title || '(sem título)' }),
+    el('p', { textContent: d.meta.finalUrl, style: 'color:var(--muted)' }));
+
+  // HTML
+  $('#html').replaceChildren(
+    el('div', { className: 'toolbar' }, el('button', { textContent: 'Baixar HTML', onclick: () => download('dom.html', d.html) })),
+    el('pre', { textContent: d.html }));
+
+  // Assets
+  const assetsEl = $('#assets'); assetsEl.replaceChildren();
+  for (const [group, list] of Object.entries(d.assets)) {
+    assetsEl.append(el('h3', { textContent: `${group} (${list.length})` }));
+    const tbl = el('table', {}, el('tr', {}, ...['URL', 'Status', 'Tipo'].map((h) => el('th', { textContent: h }))));
+    list.forEach((a) => tbl.append(el('tr', {},
+      el('td', {}, el('a', { href: a.url, target: '_blank', rel: 'noreferrer noopener', textContent: a.url, style: 'color:var(--accent)' })),
+      el('td', { textContent: a.status }), el('td', { textContent: a.contentType || '-' }))));
+    assetsEl.append(tbl);
+  }
+
+  // APIs
+  const apiEl = $('#api'); apiEl.replaceChildren(
+    el('div', { className: 'toolbar' }, el('button', { textContent: 'Baixar JSON', onclick: () => download('api-calls.json', JSON.stringify(d.apiCalls, null, 2)) })));
+  if (!d.apiCalls.length) apiEl.append(el('p', { textContent: 'Nenhuma chamada XHR/Fetch detectada.' }));
+  d.apiCalls.forEach((c) => {
+    const body = [
+      'REQUEST HEADERS\n' + JSON.stringify(c.requestHeaders, null, 2),
+      c.postData ? '\nPOST DATA\n' + c.postData : '',
+      '\nRESPONSE PREVIEW\n' + (c.bodyPreview ?? '(indisponível)'),
+    ].join('\n');
+    apiEl.append(el('details', {},
+      el('summary', {},
+        el('span', { className: 'badge', textContent: c.method }),
+        el('span', { className: 'badge ' + (c.status < 400 ? 'ok' : 'bad'), textContent: c.status }),
+        c.url),
+      el('pre', { textContent: body })));
+  });
+
+  // JS
+  const jsEl = $('#js'); jsEl.replaceChildren();
+  if (!d.scripts.length) jsEl.append(el('p', { textContent: 'Nenhum arquivo JS capturado.' }));
+  d.scripts.forEach((j) => jsEl.append(el('details', {},
+    el('summary', {}, el('span', { className: 'badge', textContent: (j.bytes / 1024).toFixed(1) + ' KB' }), j.url + (j.truncated ? ' (truncado)' : '')),
+    el('div', { className: 'toolbar', style: 'padding:8px 12px' },
+      el('button', { textContent: 'Baixar .js', onclick: () => download(j.url.split('/').pop().split('?')[0] || 'script.js', j.code) })),
+    el('pre', { textContent: j.code }))));
+}
+</script>
+</body>
+</html>
